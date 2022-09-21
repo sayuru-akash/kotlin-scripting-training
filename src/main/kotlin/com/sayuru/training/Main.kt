@@ -7,8 +7,12 @@ import java.io.InputStream
 import java.math.BigDecimal
 import java.nio.file.Files
 import java.nio.file.Paths
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeFormatterBuilder
 
 fun main() {
+    val startTime = System.currentTimeMillis()
     val path = System.getProperty("user.dir")
 
     val inputStream: InputStream = File("$path/src/main/resources/SAMPLE.dat").inputStream()
@@ -16,31 +20,35 @@ fun main() {
 
     val infoCSVPath = "$path/src/main/resources/INFO.csv"
     val tradeCSVPath = "$path/src/main/resources/TRADE.csv"
-    val exTradeCSVPath = "$path/src/main/resources/EXTRADE.csv"
-
-    val infoWriter = Files.newBufferedWriter(Paths.get(infoCSVPath))
-    val tradeWriter = Files.newBufferedWriter(Paths.get(tradeCSVPath))
-    val exTradeWriter = Files.newBufferedWriter(Paths.get(exTradeCSVPath))
+    val exTradeCSVPath = "$path/src/main/resources/EX_TRADE.csv"
 
     val lineList = mutableListOf<String>()
     inputStream.bufferedReader().forEachLine { lineList.add(it) }
 
-    val headerList = lineList[0]
-
-    if (headerList.take(5) != "HEADR") {
+    if (lineList.first().take(5) != "HEADR") {
         printErr("Invalid Header")
         return
     }
-    val head = Headr(headerList)
-    when (head.headerVersion) {
-        "0004".toLong(), "0005".toLong() -> {}
-        else -> {
-            printErr("Invalid Header Version")
-            return
-        }
+
+    val headerLine = lineList.first()
+
+    if (headerLine.length < 27) {
+        printErr("Invalid Header Length")
+        return
     }
-    if (head.headerVersion < 5 && head.fileComment.isNotEmpty()) {
+
+    val head = Header(headerLine)
+
+    if (head.headerVersion != "0004".toLong() && head.headerVersion != "0005".toLong()) {
+        printErr("Invalid Header Version")
+        return
+    }
+    if (head.headerVersion < 5 && head.formattedFileComment.isNotEmpty()) {
         printErr("Invalid Header Comment")
+        return
+    }
+    if (head.formattedFileComment.length != head.fileCommentAllowedLength) {
+        printErr("Invalid Header Comment Size")
         return
     }
 
@@ -51,13 +59,13 @@ fun main() {
         tradeList.sortedByDescending { it.substring(35, 50).toBigDecimal() * it.substring(50, 61).toBigDecimal() }
 
     val tradeQty = tradeList.size
-    when (tradeQty) {
-        0 -> {
-            println("No Trades")
-        }
 
-        else -> {}
+    if (tradeQty == 0) {
+        println("No Trades")
+        return
     }
+
+    val tradeWriter = Files.newBufferedWriter(Paths.get(tradeCSVPath))
 
     val tradeCSVPrinter = CSVPrinter(
         tradeWriter, CSVFormat.Builder.create().setHeader(
@@ -73,14 +81,17 @@ fun main() {
     )
 
     for (i in 0 until tradeQty) {
+        if (sortedTradeList[i].length < 69) {
+            printErr("Invalid Trade @ trade $i")
+        }
+
         val trade = Trade(sortedTradeList[i])
+
 //        println(trade)
-        when (trade.tradeDirection) {
-            "B" -> {}
-            "S" -> {}
-            else -> {
-                printErr("Invalid Trade Direction")
-            }
+
+        if (trade.tradeDirection != "B" && trade.tradeDirection != "S") {
+            printErr("Invalid Trade Direction @ trade $i")
+            return
         }
         for (j in 0 until 3) {
             if (!trade.tradeItemID[j].isUpperCase()) {
@@ -95,26 +106,28 @@ fun main() {
         if (trade.tradeQuantity <= 0) {
             printErr("Invalid Trade Quantity @ trade $i")
         }
-        for (j in 0 until 4) {
-            if (!trade.tradeBuyer[j].isLetterOrDigit() && trade.tradeBuyer[j] != '_') {
-                printErr("Invalid Trade Buyer @ trade $i , buyer $j")
-            }
-            if (!trade.tradeSeller[j].isLetterOrDigit() && trade.tradeSeller[j] != '_') {
-                printErr("Invalid Trade Seller @ trade $i , seller $j")
-            }
+        if (!isStringContainsLatinCharactersAndUnderscoreOnly(trade.tradeBuyer)) {
+            printErr("Invalid Trade Buyer ID @ trade $i")
+        }
+        if (!isStringContainsLatinCharactersAndUnderscoreOnly(trade.tradeSeller)) {
+            printErr("Invalid Trade Seller ID @ trade $i")
         }
 
-        tradeCSVPrinter.printRecord(
-            trade.tradeDateTime,
-            trade.tradeDirection,
-            trade.tradeItemID,
-            trade.tradePrice,
-            trade.tradeQuantity,
-            trade.tradeBuyer,
-            trade.tradeSeller,
-            trade.tradeComment
-        )
-        tradeCSVPrinter.flush()
+        try {
+            tradeCSVPrinter.printRecord(
+                trade.formattedDateTime,
+                trade.tradeDirection,
+                trade.tradeItemID,
+                trade.tradePrice,
+                trade.tradeQuantity,
+                trade.tradeBuyer,
+                trade.tradeSeller,
+                trade.tradeComment
+            )
+            tradeCSVPrinter.flush()
+        } catch (e: Exception) {
+            printErr("Error writing to TRADE.csv")
+        }
     }
 
     val exTradeList = lineList.filter { it.take(5) == "EXTRD" }
@@ -122,15 +135,13 @@ fun main() {
         exTradeList.sortedByDescending { it.substring(42, 57).toBigDecimal() * it.substring(57, 68).toBigDecimal() }
 
     val exTradeQty = exTradeList.size
-    when (exTradeQty) {
-        0 -> {
-            println("No Extra Trades")
-        }
-
-        else -> {}
+    if (exTradeQty == 0) {
+        println("No Ex-Trades")
+        return
     }
 
-    val extrdCSVPrinter = CSVPrinter(
+    val exTradeWriter = Files.newBufferedWriter(Paths.get(exTradeCSVPath))
+    val exTradeCSVPrinter = CSVPrinter(
         exTradeWriter, CSVFormat.Builder.create().setHeader(
             "Trade Version",
             "Date & Time",
@@ -145,136 +156,172 @@ fun main() {
     )
 
     for (i in 0 until exTradeQty) {
-        val exTrade = Extrd(sortedExTradeList[i])
+        if (sortedExTradeList[i].length < 30) {
+            printErr("Invalid Ex-Trade @ ex-trade $i")
+        }
+
+        val exTrade = ExTrade(sortedExTradeList[i])
+
 //        println(exTrade)
+
         if (exTrade.tradeVersion != "0001".toLong()) {
-            printErr("Invalid ExTrade Version @ extrade $i")
+            printErr("Invalid ExTrade Version @ exTrade $i")
         }
-        when (exTrade.tradeDirection) {
-            "BUY_" -> {}
-            "SELL" -> {}
-            else -> {
-                printErr("Invalid ExTrade Direction @ extrade $i")
-            }
+        if (exTrade.tradeDirection != "BUY_" && exTrade.tradeDirection != "SELL") {
+            printErr("Invalid ExTrade Direction @ exTrade $i")
         }
+
         for (j in 0 until 3) {
             if (!exTrade.tradeItemID[j].isUpperCase()) {
-                printErr("Invalid ExTrade Item ID @ extrade $i , item $j")
+                printErr("Invalid ExTrade Item ID @ exTrade $i , item $j")
             }
         }
         for (j in 3 until 12) {
             if (!exTrade.tradeItemID[j].isDigit() && !exTrade.tradeItemID[j].isUpperCase()) {
-                printErr("Invalid ExTrade Item ID @ extrade $i , item $j")
+                printErr("Invalid ExTrade Item ID @ exTrade $i , item $j")
             }
         }
         if (exTrade.tradeQuantity <= 0) {
-            printErr("Invalid ExTrade Quantity @ extrade $i")
+            printErr("Invalid ExTrade Quantity @ exTrade $i")
         }
-        for (j in 0 until 4) {
-            if (!exTrade.tradeBuyer[j].isLetterOrDigit() && exTrade.tradeBuyer[j] != '_') {
-                printErr("Invalid ExTrade Buyer @ extrade $i , buyer $j")
-            }
-            if (!exTrade.tradeSeller[j].isLetterOrDigit() && exTrade.tradeSeller[j] != '_') {
-                printErr("Invalid ExTrade Seller @ extrade $i , seller $j")
-            }
+        if (!isStringContainsLatinCharactersAndUnderscoreOnly(exTrade.tradeBuyer)) {
+            printErr("Invalid ExTrade Buyer @ exTrade $i")
         }
 
-        extrdCSVPrinter.printRecord(
-            exTrade.tradeVersion,
-            exTrade.tradeDateTime,
-            exTrade.tradeDirection,
-            exTrade.tradeItemID,
-            exTrade.tradePrice,
-            exTrade.tradeQuantity,
-            exTrade.tradeBuyer,
-            exTrade.tradeSeller,
-            exTrade.nestedTags
-        )
-        extrdCSVPrinter.flush()
+        try {
+            exTradeCSVPrinter.printRecord(
+                exTrade.tradeVersion,
+                exTrade.formattedDateTime,
+                exTrade.tradeDirection,
+                exTrade.tradeItemID,
+                exTrade.tradePrice,
+                exTrade.tradeQuantity,
+                exTrade.tradeBuyer,
+                exTrade.tradeSeller,
+                exTrade.nestedTags
+            )
+            exTradeCSVPrinter.flush()
+        } catch (e: Exception) {
+            printErr("Error writing to EX_TRADE.csv")
+        }
     }
 
     val allTradeCount: Long = tradeQty.toLong() + exTradeQty.toLong()
 
-    val footerList = lineList[lineList.size - 1]
-
-    if (footerList.take(5) != "FOOTR") {
+    if (lineList.last().take(5) != "FOOTR") {
         printErr("Invalid Footer")
         return
     }
-    val foot = Footr(footerList)
+
+    val footerLine = lineList.last()
+    if (footerLine.length < 15) {
+        printErr("Invalid Footer Length")
+        return
+    }
+
+    val foot = Footer(footerLine)
+
     if (foot.tradeCount != allTradeCount) {
         printErr("Invalid Footer Trade Count")
         return
     }
-    if (head.headerVersion != "0005".toLong() && !foot.tradeCharCount.equals(null)) {
+    if (head.headerVersion != ("0005").toLong() && !foot.tradeCharCount.equals(null)) {
         printErr("Invalid Footer Trade Char Count Exists")
         return
     }
 
 //    println(foot)
 
+    val infoWriter = Files.newBufferedWriter(Paths.get(infoCSVPath))
     val csvPrinter = CSVPrinter(
         infoWriter, CSVFormat.Builder.create().setHeader(
             "Header Version",
             "File Creation Date and Time",
-            "File Comment, Total Number of Trades and ExTrades",
-            "Number of Characters in Trade and Extrade Structures"
+            "File Comment",
+            "Total Number of Trades and ExTrades",
+            "Number of Characters in Trade and ExTrade Structures"
         ).build()
     )
-    csvPrinter.printRecord(
-        head.headerVersion,
-        head.fileCreation,
-        head.fileComment,
-        foot.tradeCount,
-        foot.tradeCharCount
-    )
+    try {
+        csvPrinter.printRecord(
+            head.headerVersion,
+            head.fileCreation,
+            head.formattedFileComment,
+            foot.tradeCount,
+            foot.tradeCharCount
+        )
 
-    csvPrinter.flush()
+        csvPrinter.flush()
+    } catch (e: Exception) {
+        printErr("Error writing to INFO.csv")
+    }
     csvPrinter.close()
+
+    for (i in 0 until lineList.size) {
+        if (lineList[i].take(5) != "HEADR" && lineList[i].take(5) != "FOOTR" && lineList[i].take(5) != "TRADE" && lineList[i].take(
+                5
+            ) != "EXTRD"
+        ) {
+            printErr("Invalid Line Detected @ line $i")
+        }
+    }
+
+    println("Execution completed! Check the output files for the results.\nExecution time: ${System.currentTimeMillis() - startTime} ms")
 }
 
-data class Headr(val headr: String) {
-    var headerVersion: Long = headr.drop(5).take(4).toLong()
-    var fileCreation: String = headr.drop(9).take(17)
-    var fileComment: String = headr.drop(30).take(headr.length - 30)
+data class Header(val header: String) {
+    var headerVersion: Long = header.substring(5, 9).toLong()
+    var fileCreation: String = header.substring(9, 26)
+    private var fileComment: String = header.substring(26, header.length)
+    var fileCommentAllowedLength: Int = fileComment.substringAfter("{").substringBefore("}").toInt()
+    var formattedFileComment: String = fileComment.substringAfter("}")
 }
 
-//open class AnyTrade {
-//    var tradeDateTime: String = ""
-//    var tradeDirection: String = ""
-//    var tradeItemID : String = ""
-//    var tradePrice : BigDecimal = BigDecimal.ZERO
-//    var tradeQuantity : Int = 0
-//    var tradeBuyer : String = ""
-//    var tradeSeller : String = ""
-//}
-
-data class Trade(val trade: String) {
-    var tradeDateTime: String = trade.drop(5).take(17)
-    var tradeDirection: String = trade.drop(22).take(1)
-    var tradeItemID: String = trade.drop(23).take(12)
-    var tradePrice: BigDecimal = trade.drop(35).take(15).toBigDecimal()
-    var tradeQuantity: Long = trade.drop(50).take(11).toLong()
-    var tradeBuyer: String = trade.drop(61).take(4)
-    var tradeSeller: String = trade.drop(65).take(4)
-    var tradeComment: String = trade.drop(69).take(32)
+open class AnyTrade {
+    val dateTimeFormatIdentifier: DateTimeFormatter? = DateTimeFormatterBuilder()
+        .appendPattern("yyyyMMddHHmmssSSS")
+        .toFormatter()
+    val dateTimeFormatter: DateTimeFormatter? = DateTimeFormatterBuilder()
+        .appendPattern("yyyy-MM-dd HH:mm:ss.SSS")
+        .toFormatter()
 }
 
-data class Extrd(val extrd: String) {
-    var tradeVersion: Long = extrd.drop(5).take(4).toLong()
-    var tradeDateTime: String = extrd.drop(9).take(17)
-    var tradeDirection: String = extrd.drop(26).take(4)
-    var tradeItemID: String = extrd.drop(30).take(12)
-    var tradePrice: BigDecimal = extrd.drop(42).take(15).toBigDecimal()
-    var tradeQuantity: Long = extrd.drop(57).take(11).toLong()
-    var tradeBuyer: String = extrd.drop(68).take(4)
-    var tradeSeller: String = extrd.drop(72).take(4)
-    var nestedTags = extrd.drop(76).take(extrd.length - 76)
+data class Trade(val trade: String) : AnyTrade() {
+    private var tradeDateTime: String = trade.substring(5, 22)
+    var formattedDateTime: String = LocalDateTime.parse(tradeDateTime, dateTimeFormatIdentifier).format(
+        dateTimeFormatter
+    )
+    var tradeDirection: String = trade.substring(22, 23)
+    var tradeItemID: String = trade.substring(23, 35)
+    var tradePrice: BigDecimal = trade.substring(35, 50).toBigDecimal().divide(BigDecimal(10000))
+    var tradeQuantity: Long = trade.substring(50, 61).toLong()
+    var tradeBuyer: String = trade.substring(61, 65)
+    var tradeSeller: String = trade.substring(65, 69)
+    var tradeComment: String = trade.substring(69, 101).trimStart().replace("""[\\,/]""".toRegex(), "")
 }
 
-data class Footr(val footr: String) {
-    var tradeCount: Long = footr.drop(5).take(10).toLong()
-    var tradeCharCount: Long = footr.drop(15).take(10).toLong()
+data class ExTrade(val exTrade: String) : AnyTrade() {
+    var tradeVersion: Long = exTrade.substring(5, 9).toLong()
+    private var tradeDateTime: String = exTrade.substring(9, 26)
+    var formattedDateTime: String = LocalDateTime.parse(tradeDateTime, dateTimeFormatIdentifier).format(
+        dateTimeFormatter
+    )
+    var tradeDirection: String = exTrade.substring(26, 30)
+    var tradeItemID: String = exTrade.substring(30, 42)
+    var tradePrice: BigDecimal = exTrade.substring(42, 57).toBigDecimal().divide(BigDecimal(10000))
+    var tradeQuantity: Long = exTrade.substring(57, 68).toLong()
+    var tradeBuyer: String = exTrade.substring(68, 72)
+    var tradeSeller: String = exTrade.substring(72, 76)
+    var nestedTags: String = exTrade.substring(76, exTrade.length).trimStart()
+}
+
+data class Footer(val footer: String) {
+    var tradeCount: Long = footer.substring(5, 15).toLong()
+    var tradeCharCount: Long = footer.substring(15, 25).toLong()
+}
+
+fun isStringContainsLatinCharactersAndUnderscoreOnly(iStringToCheck: String): Boolean {
+    return iStringToCheck.matches("^[a-zA-Z_]+$".toRegex())
 }
 
 fun printErr(errorMsg: String) {
