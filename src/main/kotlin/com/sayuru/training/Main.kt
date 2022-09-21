@@ -21,46 +21,10 @@ fun main() {
 //    val inputStream: InputStream = File("$args[0]").inputStream()
 
     inputStream.bufferedReader().forEachLine { lineList.add(it) }
-
-//    inputStream.bufferedReader().useLines { lines ->
-//        lines.forEach { line ->
-//            when (line.substring(0, 5)) {
-//
-//                "HEADR" -> {
-//                    val header = Header(line)
-//                }
-//
-//                "TRADE" -> {
-//                    val Trade = Trade(line)
-//                }
-//
-//                "EXTRD" -> {
-//                    val exTrade = ExTrade(line)
-//                }
-//
-//                "FOOTR" -> {
-//                    val footer = Footer(line)
-//                }
-//
-//                else -> {
-//                    println("Invalid Record detected")
-//                }
-//
-//            }
-//        }
-//    }
+    validateTags(lineList)
 
     val headerLine = lineList.first()
-    if (headerLine.take(5) != "HEADR") {
-        printErr("Invalid Header")
-        return
-    }
-
     val footerLine = lineList.last()
-    if (footerLine.take(5) != "FOOTR") {
-        printErr("Invalid Footer")
-        return
-    }
 
     val tradeList = lineList.filter { it.take(5) == "TRADE" }
     val tradeQty = handleTrades(tradeList)
@@ -70,15 +34,6 @@ fun main() {
 
     val allTradeCount: Long = tradeQty.toLong() + exTradeQty.toLong()
     handleInfo(headerLine, footerLine, allTradeCount)
-
-    for (i in 0 until lineList.size) {
-        if (lineList[i].take(5) != "HEADR" && lineList[i].take(5) != "FOOTR" && lineList[i].take(5) != "TRADE" && lineList[i].take(
-                5
-            ) != "EXTRD"
-        ) {
-            printErr("Invalid Line Detected @ location $i")
-        }
-    }
 
     println("Execution completed! Check the output files for the results.\nExecution time: ${System.currentTimeMillis() - startTime} ms")
 }
@@ -129,7 +84,6 @@ data class ExTrade(val exTrade: String) : AnyTrade() {
     var tradeSeller: String = exTrade.substring(72, 76)
     var nestedTags: String = exTrade.substring(76, exTrade.length).trimStart().replace("{", "[").replace("}", "]")
         .replace("|", ",")
-
 //    var nestedArray: Array<String> = nestedTags.substring(1, nestedTags.length).split("|").toTypedArray()
 }
 
@@ -141,8 +95,20 @@ data class Footer(val footer: String) {
 fun handleInfo(headerLine: String, footerLine: String, allTradeCount: Long) {
     val infoCSVPath = "$path/src/main/resources/INFO.csv"
 
+    if (headerLine.take(5) != "HEADR") {
+        printErr("Invalid Header")
+        return
+    }
     if (headerLine.length < 27) {
         printErr("Invalid Header Length")
+        return
+    }
+    if (footerLine.take(5) != "FOOTR") {
+        printErr("Invalid Footer")
+        return
+    }
+    if (footerLine.length < 15) {
+        printErr("Invalid Footer Length")
         return
     }
 
@@ -159,11 +125,6 @@ fun handleInfo(headerLine: String, footerLine: String, allTradeCount: Long) {
     }
     if (head.formattedFileComment.length != head.fileCommentAllowedLength) {
         printErr("Invalid Header Comment Size")
-        return
-    }
-
-    if (footerLine.length < 15) {
-        printErr("Invalid Footer Length")
         return
     }
 
@@ -360,6 +321,24 @@ fun handleExTrades(exTradeList: List<String>): Int {
     }
     return exTradeQty
 }
+
+fun validateTags(lineList: List<String>) {
+    for (i in lineList.indices) {
+        if (lineList[i].take(5) != "HEADR" && lineList[i].take(5) != "FOOTR" && lineList[i].take(5) != "TRADE" && lineList[i].take(
+                5
+            ) != "EXTRD"
+        ) {
+            printErr("Invalid Line Detected @ location $i")
+        }
+        if (lineList[i].take(5) == "HEADR" && i != 0) {
+            printErr("Invalid Header Detected @ location $i")
+        }
+        if (lineList[i].take(5) == "FOOTR" && i != lineList.size - 1) {
+            printErr("Invalid Footer Detected @ location $i")
+        }
+    }
+}
+
 
 fun isStringContainsLatinCharactersAndUnderscoreOnly(iStringToCheck: String): Boolean {
     return iStringToCheck.matches("^[a-zA-Z_]+$".toRegex())
